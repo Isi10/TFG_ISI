@@ -1,0 +1,135 @@
+CLASIFICACIÓN IMÁGENES EN ESCALA DE GRISES
+
+//INSTALAMOS LOS PAQUETES NECESARIOS
+pip install everywhereml>=0.2.19
+pip install imageio[opencv]
+pip install imageio[pyav]
+
+
+
+//CREAMOS LA CARPETA O PONEMOS LA CARPETA DONDE ALMACENAMOS LAS IMAGENES
+from logging import basicConfig, INFO
+from everywhereml.data import ImageDataset
+from everywhereml.data.collect import MjpegCollector
+
+base_folder = 'CARPETA_NOMBRE'
+IP_ADDRESS_OF_ESP = 'http://esp32cam.local:81'
+basicConfig(level=INFO)
+
+try:
+    image_dataset = ImageDataset.from_nested_folders(
+        name='Dataset', 
+        base_folder=base_folder
+    )
+except FileNotFoundError:
+   
+    mjpeg_collector = MjpegCollector(address='DIRECCION IP')
+    image_dataset = mjpeg_collector.collect_many_classes(
+        dataset_name='Dataset', 
+        base_folder=base_folder,
+        duration=30
+    )
+  
+print(image_dataset)
+
+//COMPROBAOS QUE SE HA HECHO CORRECTAMENTE
+image_dataset.preview(
+    samples_per_class=10, 
+    rows_per_class=2, 
+    figsize=(20, 10)
+)
+
+//TRANSFORMAMOS A ESCALAS DE GRISES
+image_dataset = image_dataset.gray().uint8()
+
+image_dataset.preview(
+    samples_per_class=10, 
+    rows_per_class=2, 
+    figsize=(20, 10), 
+    cmap='gray'
+)
+
+//EMPEZAMOS EL ENTRENAMIENTO DEL MODELO
+from everywhereml.preprocessing.image.object_detection import HogPipeline
+from everywhereml.preprocessing.image.transform import Resize
+
+pipeline = HogPipeline(
+    transforms=[
+        Resize(width=40, height=30)
+    ]
+)
+
+
+feature_dataset = pipeline.fit_transform(image_dataset)
+feature_dataset.describe()
+
+print(pipeline)
+
+feature_dataset.plot.features_pairplot(n=200, k=8)
+
+feature_dataset.plot.umap()
+
+//COMPROBAMOS LA EFICACIO DEL ENTRENAMIENTO DEL MODELO
+from everywhereml.sklearn.ensemble import RandomForestClassifier
+
+for i in range(10):
+    clf = RandomForestClassifier(n_estimators=5, max_depth=10)
+
+    train, test = feature_dataset.split(test_size=0.4, random_state=i)
+    clf.fit(train)
+
+    print('Score on test set: %.2f' % clf.score(test))
+
+clf.fit(feature_dataset)
+
+//RECOGEMOS LOS ARCHIVOS PIPELINE Y CLASSIFIER QUE VAMOS A UTILIZAR EN ARDUINO
+print(pipeline.to_arduino_file(
+    filename='path-to-sketch/HogPipeline.h',
+    instance_name='hog'
+))
+
+print(clf.to_arduino_file(
+    filename='path-to-sketch/HogClassifier.h',
+    instance_name='classifier', 
+    class_map=feature_dataset.class_map
+))
+
+//CODIGO ARDUINO
+#include "esp32cam.h"
+#include "esp32cam/http/LiveFeed.h"
+//CAMBIA EL WIFI Y LA CONTRASEÑA
+#define WIFI_SSID "FROST"
+#define WIFI_PASS "mercadona"
+
+
+Eloquent::Esp32cam::Cam cam;
+Eloquent::Esp32cam::Http::LiveFeed feed(cam, 80);
+
+
+void setup() {
+    Serial.begin(115200);
+    delay(3000);
+    Serial.println("Init");
+
+   //PON EL MODELO DE TU CAMARA
+    cam.wrover();
+    cam.highQuality();
+    cam.svga();
+
+    while (!cam.begin())
+        Serial.println(cam.getErrorMessage());
+
+    while (!cam.connect(WIFI_SSID, WIFI_PASS))
+        Serial.println(cam.getErrorMessage());
+
+    while (!feed.begin())
+        Serial.println(feed.getErrorMessage());
+
+    cam.viewAt("esp32cam");
+
+    Serial.println(feed.getWelcomeMessage());
+}
+
+
+void loop() {
+}
